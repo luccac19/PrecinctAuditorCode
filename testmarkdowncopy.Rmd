@@ -1,0 +1,136 @@
+---
+title: "Precinct/District `r params$filter_value` Audit Results"
+output: 
+  html_document:
+  self_contained: false
+params:
+  geographyfile_path: NULL
+  addresslist_path: NULL
+  filter_column: NULL
+  filter_value: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r,echo=FALSE, message = FALSE,warning=FALSE}
+addresslist <- read_csv(params$addresslist_path, guess_max = 10000)
+geographyfile <- st_read(params$geographyfile_path,quiet=TRUE)
+
+geographyfile<- st_transform(geographyfile, 4326)
+addresslist<-addresslist[match(unique(addresslist$street),addresslist$street),]
+
+ifelse(dim(addresslist)[1]>100000,("Precinct Auditor will not audit more than 100,000 addresses at once. Your file exceeds the maximum."),(paste("Total Unique Addresses:",dim(addresslist)[1])))
+
+unit_regex <- "(?i)\\b(apt|apartment|unit|ste|suite|bldg|building|space|site|#)\\s*([A-Za-z0-9-]+)"
+addresslist$unit<-str_extract(addresslist$street, unit_regex)
+addresslist$unit<-str_extract(addresslist$unit, "(?<=\\s)[A-Za-z0-9-]+")
+addresslist$streetpart <-str_trim(str_remove(addresslist$street, unit_regex))
+addresslist$streetnumb<-as.numeric(str_extract(addresslist$streetpart, "^\\d+"))
+addresslist$streetname<-str_trim(str_remove(addresslist$streetpart, "^\\d+\\s*"))
+addresslist$unit_num<- as.numeric(str_extract(addresslist$unit, "^\\d+"))
+addresslist$unit_alpha<-str_extract(addresslist$unit, "[A-Za-z]+$")
+addresslist<-addresslist%>%arrange(
+      city,
+      streetname,
+      streetnumb,
+      unit_num,
+      unit_alpha)
+
+chunk_size <- 10000
+max_runs <- 10
+total_rows <- nrow(addresslist)
+num_chunks <- min(ceiling(total_rows / chunk_size), max_runs)
+
+points <- list()
+for (i in 1:num_chunks) {
+  start_row <- (i - 1) * chunk_size + 1
+  end_row <- min(i * chunk_size, total_rows)
+  
+  chunk <- addresslist[start_row:end_row, ]
+  
+  points[[i]]<-chunk%>%geocode(street=street,city=city,state=state,postalcode=zip,method="census")
+}
+
+
+rm(addresslist)
+
+invisible(gc())
+
+points<-do.call(rbind, points)
+
+points<-points%>%filter(!is.na(lat))
+
+print(paste("Total Geocoded Addresses:",dim(points)[1]))
+
+points_sf<- st_as_sf(
+  points,
+  coords = c("long", "lat"),
+  crs = 4269
+)
+
+points_sf <- st_transform(points_sf, 4326)
+
+selected_precinct<-geographyfile%>%filter(.data[[params$filter_column]] == params$filter_value)
+
+rm(geographyfile)
+
+invisible(gc())
+
+points_with_district <- st_join(
+  points_sf,
+  selected_precinct,
+  join = st_within
+)
+
+pad<-0.05
+xmin<-min(points$long)-pad
+xmax<-max(points$long)+pad 
+ymax<-max(points$lat)+pad
+ymin<-min(points$lat)-pad 
+full_bbox <- c(xmin,ymin,xmax,ymax)  # full area
+streets <- opq(bbox = full_bbox) %>%
+  add_osm_feature(key="highway", value="primary") %>%
+  osmdata_sf()
+roads <- streets$osm_lines
+
+disagreements<-points_with_district%>%filter(is.na(.data[[params$filter_column]]))
+
+rm(points_with_district)
+invisible(gc())
+
+print(paste("Total Addresses For Investigation:", dim(disagreements)[1]))
+
+coordinates<-st_coordinates(disagreements)
+
+eps_deg <- 0.15 / 69  
+clusters <- dbscan(coordinates, eps = eps_deg, minPts = 1)
+
+disagreements$cluster <- clusters$cluster
+
+
+for(i in 1:length(unique(disagreements$cluster))){
+selected_point <- disagreements%>% filter(cluster == unique(disagreements$cluster)[i])
+addresses<-paste(selected_point$street,selected_point$city,selected_point$state,selected_point$zip)
+disagreementmap<-ggplot() +  geom_sf(data = selected_point,
+          color = "red",
+          size = 3) +geom_sf(data =roads, color = "gray") +
+  geom_sf(data = selected_precinct,
+          fill = "lightblue",
+          color = "black",
+          alpha = 0.6) +
+  theme_minimal() +theme(
+  axis.title = element_blank(),   # remove axis titles
+  axis.text = element_blank(),    # remove axis labels
+  axis.ticks = element_blank(),   # remove tick marks
+  panel.grid = element_blank()    # optional: remove grid lines
+)+
+  labs(
+    title=paste("Cluster:",i))+  coord_sf(xlim = c(xmin,xmax), ylim = c(ymin, ymax))
+print(disagreementmap)
+print(addresses)
+}
+
+```
+

@@ -1,2 +1,2 @@
 # PrecinctAuditorCode
-This is a repository for sharing the code to run precinct auditing program locally on any device using R. [Interface Code](InterfaceCode.R)
+This is a repository for sharing the code to run precinct/district auditing program locally on any device using R. [Interface Code](InterfaceCode.R) contains the code for the Shiny app interface that makes the program so easy to upload address and boundary files to. [Output Code](OutputCode.R) contains the code for processing those files into an html output file that can be easily printed and marked as you further investigate addresses.
